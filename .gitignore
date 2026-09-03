@@ -1,0 +1,56 @@
+# ── AI 协作/私有（不入仓）───────────────────────────────────────────────
+CLAUDE.md
+hot.md
+AGENTS.md
+GEMINI.md
+**/CLAUDE.md
+**/hot.md
+**/AGENTS.md
+**/GEMINI.md
+.claude/
+.agents/
+.codex/
+.cursor/
+.windsurf/
+**/.claude/
+**/.agents/
+**/.codex/
+**/docs/ai/
+**/memory-proposals/
+
+# ── 运行时/依赖/产物（不入仓）──────────────────────────────────────────
+node_modules/
+dist/
+.build/
+.acceptance/
+*.bak
+*.log
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# ── Python 虚拟环境（不入仓）────────────────────────────────────────────
+venv/
+.venv/
+
+# ── 测试/临时产物（不入仓）──────────────────────────────────────────────
+.pytest_cache/
+.tmp/
+temp/
+temp*/
+*_cache
+temp*
+temp*/
+
+# ── OS / 编辑器（不入仓）───────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# ── 模型探索残留（不入仓）───────────────────────────────────────────────
+# (deepseek 定价爬虫等模型测试临时脚本，见 experiments/ 时排除)
+scrape_*.py
+get_deepseek_*.py
+deepseek_prices_*.txt

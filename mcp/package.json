@@ -1,0 +1,23 @@
+{
+  "name": "acceptance-driven-mcp",
+  "version": "0.1.0",
+  "description": "Acceptance-Driven MCP — derive a layered functional-block graph from PRD acceptance criteria (trigger→feedback tree → aggregated block graph). Forward-direction counterpart of blockgraph-mcp.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "decompose": "tsx scripts/decompose-pipeline.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.15.29",
+    "tsx": "^4.22.4",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.1"
+  }
+}
