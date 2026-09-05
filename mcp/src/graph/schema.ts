@@ -1,6 +1,6 @@
 /**
  * Acceptance-Driven MCP v0.1 — Data Model Types (Forward Direction)
- * Schema design: docs/schema-design-acceptance-driven-zh.md
+ * Schema design: docs/method.md (raw design notes are kept in the private docs/_internal/ layer)
  * Derives a layered functional-block graph from PRD acceptance criteria.
  * Anchored on SourceRef (AC/FR/trigger/flow-node) instead of code entity + evidence.
  */

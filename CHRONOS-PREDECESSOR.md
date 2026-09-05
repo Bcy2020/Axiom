@@ -39,4 +39,4 @@ The predecessor is referenced here (and in Axiom's README and docs) as **Chronos
 
 ---
 
-**See also**: [`docs/acceptance-driven-direction-change-zh.md`](docs/acceptance-driven-direction-change-zh.md) for the full Chinese direction-change document; [`agent-chronos-arch`](https://github.com/Bcy2020/agent-chronos-arch) for the predecessor repository.
+**See also**: [`docs/method.md`](docs/method.md) for the method/design reference; [`agent-chronos-arch`](https://github.com/Bcy2020/agent-chronos-arch) for the predecessor repository.

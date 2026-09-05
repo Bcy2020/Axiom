@@ -1,7 +1,7 @@
 {
   "name": "acceptance-driven-mcp",
   "version": "0.1.0",
-  "description": "Acceptance-Driven MCP — derive a layered functional-block graph from PRD acceptance criteria (trigger→feedback tree → aggregated block graph). Forward-direction counterpart of blockgraph-mcp.",
+  "description": "Acceptance-Driven MCP — derive a layered functional-block graph from PRD acceptance criteria (trigger→feedback tree → aggregated block graph). Forward-direction counterpart of the predecessor repository's blockgraph tooling.",
   "type": "module",
   "scripts": {
     "build": "tsc",

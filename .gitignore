@@ -22,13 +22,15 @@ GEMINI.md
 node_modules/
 dist/
 .build/
-.acceptance/
 *.bak
 *.log
 __pycache__/
 *.pyc
 *.pyo
 .env
+
+# ── docs 内部层（工作笔记/未定稿，不入 github，见 docs/_internal/README.md）──
+**/docs/_internal/
 
 # ── Python 虚拟环境（不入仓）────────────────────────────────────────────
 venv/

@@ -18,7 +18,7 @@ Anchored on `SourceRef` (ac / fr / trigger / flow_node / derived) rather than a 
 
 ## Why (short)
 
-The predecessor (tree-centered recursion, ~142-node run) hit cost/latency blow-up, upstream distortion (a parent can't foresee what a child needs), and no room for agent dialogue. Axiom instead derives structure from the **acceptance criteria** with a **few agents**. See `../docs/acceptance-driven-direction-change-zh.md` (direction change, zh) and `../docs/schema-design-acceptance-driven-zh.md` (schema design, zh).
+The predecessor (tree-centered recursion, ~142-node run) hit cost/latency blow-up, upstream distortion (a parent can't foresee what a child needs), and no room for agent dialogue. Axiom instead derives structure from the **acceptance criteria** with a **few agents**. See [`../docs/method.md`](../docs/method.md) for the full method/design reference.
 
 ## Current scope (v0.1, hardened)
 

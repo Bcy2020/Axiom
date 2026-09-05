@@ -61,26 +61,28 @@ So Axiom's division is:
 - **structure derivation** → strongest available agent (the error multiplier is highest here);
 - **implementation** → weaker agent is acceptable **only** because validation (compile/conservation/tests) safeguards it.
 
-This is the current working route, not a settled final architecture — see [`docs/acceptance-driven-direction-change-zh.md`](docs/acceptance-driven-direction-change-zh.md).
+This is the current working route, not a settled final architecture — see [`docs/method.md`](docs/method.md).
 
 ## Repo layout
 
 ```
 Axiom/
 ├── docs/
-│   ├── acceptance-driven-direction-change-zh.md   — the full direction change (zh)
-│   ├── schema-design-acceptance-driven-zh.md        — schema design (zh)
-│   ├── trigger-trace-and-conservation-zh.md         — trigger trace + conservation, V2 (zh)
+│   ├── method.md                                     — public method/design reference (clean, no working notes)
 │   └── skill/acceptance-driven-decomposition/SKILL.md — the driving skill
+│   (raw design notes, open questions, and per-revision discussions live in the
+│    private docs/_internal/ layer, which is NOT in this repository)
 ├── mcp/                                            — the acceptance-driven MCP server
 │   ├── src/graph/   schema / store / draft / compiler
 │   ├── src/mcp/     tools / server
 │   ├── tests/       vitest
 │   └── scripts/     smoke + MCP-over-stdio round-trip
-├── experiments/                                    — real PRD decompositions (each = a README)
+├── experiments/                                    — real PRD decompositions (each = a README + PRD)
 │   ├── test_3D/          weak-model: flat graph, conservation no-op (counterexample)
 │   ├── test_3D-modelB/   strong-model: 3-level tree, conservation exercised 8/8
 │   └── music/            strong-model: DAW, layered + conservation 3/3 + coverage 44/44
+│   (each also carries its .acceptance/ store — the actual decomposition graph DB,
+│    committed so the real graph is inspectable, not just a prose summary)
 └── CHRONOS-PREDECESSOR.md                          — the tree-centered predecessor
 ```
 
@@ -106,7 +108,7 @@ The method is captured as a skill that instructs an agent (the structure agent) 
 
 ## Experiments
 
-Real decompositions, each with a README explaining what the model produced and what it means for the route (strong/weak division of labor):
+Real decompositions, each with a README explaining what the model produced and what it means for the route (strong/weak division of labor). Each experiment also carries its `.acceptance/` store — the actual decomposition **graph** (blocks / triggers / flow-trees / data-sources / deps) as a SQLite database, so the real structure is inspectable and re-runnable, not just summarized:
 - [`experiments/test_3D/`](experiments/test_3D/) — 3D modeling PRD (counterexample: weak model → flat graph)
 - [`experiments/test_3D-modelB/`](experiments/test_3D-modelB/) — 3D modeling PRD (strong model → layered tree, conservation exercised)
 - [`experiments/music/`](experiments/music/) — DAW PRD (second complex sample)
