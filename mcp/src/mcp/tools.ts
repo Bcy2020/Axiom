@@ -211,6 +211,22 @@ export function handleCommitSnapshot(args: { git_sha?: string; version?: string 
   return { ok: true, data: { id: `snap-${Date.now()}` } };
 }
 
+// ── V2.1: graph version + change log (evolution / mutation audit) ─────────────
+export function handleGetGraphVersion(_a: unknown, ctx: ToolContext): ToolResponse<{ version: number }> {
+  const db = requireDb(ctx); if (!db) return err("not initialized");
+  return { ok: true, data: { version: draft.getGraphVersion(db) } };
+}
+export function handleListChangeLog(args: { actor?: string; kind?: string; target_id?: string }, ctx: ToolContext): ToolResponse<{ version: number; changes: ReturnType<typeof draft.listChangeLog> }> {
+  const db = requireDb(ctx); if (!db) return err("not initialized");
+  return { ok: true, data: { version: draft.getGraphVersion(db), changes: draft.listChangeLog(db, args) } };
+}
+export function handleRevertChange(args: { change_id: string; reason?: string }, ctx: ToolContext): ToolResponse<{ ok: boolean; change_id: string }> {
+  const db = requireDb(ctx); if (!db) return err("not initialized");
+  const ok = draft.revertChange(db, args.change_id, { actor: "revert", reason: args.reason ?? "" });
+  if (!ok) return err(`change "${args.change_id}" not found`, "NOT_FOUND");
+  return { ok: true, data: { ok: true, change_id: args.change_id } };
+}
+
 // ── Query (inspection) ──────────────────────────────────────────────────────
 export function handleListBlocks(_a: unknown, ctx: ToolContext): ToolResponse<FunctionalBlock[]> {
   const db = requireDb(ctx); if (!db) return err("not initialized");

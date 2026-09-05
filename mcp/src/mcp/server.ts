@@ -17,6 +17,7 @@ import {
   handleQueryTriggerTrace, handleListTriggerTraces, handlePromoteBlock, handleCommitSnapshot,
   handleListTriggers, handleQueryRequirementsCoverage,
   handleUpdateBlock, handleUpdateTrigger, handleUpdateDataSource,
+  handleGetGraphVersion, handleListChangeLog, handleRevertChange,
 } from "./tools.js";
 import type { ToolContext } from "./tools.js";
 
@@ -156,6 +157,17 @@ async function main(): Promise<void> {
   await run(server, "commit_snapshot",
     "Commit a snapshot of the current block graph for incremental build.",
     { git_sha: z.string().optional(), version: z.string().optional() }, handleCommitSnapshot);
+
+  // V2.1: graph evolution — version + change log (audit / broadcast / revert)
+  await run(server, "get_graph_version",
+    "Return the current accepted-graph version (bumps on every promoted change). An agent holding an older version knows its view is stale.",
+    {}, handleGetGraphVersion);
+  await run(server, "list_change_log",
+    "List the graph mutation log (who/what/before/after/reason/version). Filter by actor/kind/target to compute the affected set for a scoped broadcast.",
+    { actor: z.string().optional(), kind: z.string().optional(), target_id: z.string().optional() }, handleListChangeLog);
+  await run(server, "revert_change",
+    "Fine-grained rollback: restore the `before` state of a single change-log entry (revert a bad edit).",
+    { change_id: z.string(), reason: z.string().optional() }, handleRevertChange);
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

@@ -174,6 +174,47 @@ export interface TriggerTrace {
   parent_trace_id?: string;       // nested trace linkage (upper trace -> this layer)
 }
 
+// ── V2.1: Graph evolution — change log + monotonic version ───────────────────
+// The decomposition is *derived, not frozen*: during implementation a block may
+// discover it needs data from a sibling, so the graph evolves. We record every
+// structural mutation (who/when/what/before/after/why) so a change is auditable,
+// revertible, and its affected set is computable for scoped broadcasts. A
+// monotonic `graph_version` bumps only on an ACCEPTED (promoted) change, so it
+// reflects a stable, valid structure — draft edits do not advance it, and an
+// agent holding an older version knows its view is stale.
+export type ChangeKind =
+  | "create_block"
+  | "update_block"
+  | "reparent_block"
+  | "add_port"
+  | "add_dep"
+  | "promote_block"
+  | "create_trigger"
+  | "update_trigger"
+  | "create_data_source"
+  | "update_data_source"
+  | "delete_block"
+  | "restore";
+
+export interface GraphChange {
+  id: string;
+  ts: string;
+  actor: string;            // e.g. "structure_agent" | "steward" | "agent:<id>"
+  kind: ChangeKind;
+  target_id: string;        // block / port / dep / trigger / data-source id
+  before: unknown;          // JSON state before the mutation (null for a create)
+  after: unknown;           // JSON state after the mutation (null for a delete)
+  reason: string;           // traceability of the change: a SourceRef string, or a change-request id (impl layer)
+  graph_version: number;    // accepted-graph version AT THE TIME of the change
+  compile_passed: boolean | null;      // fill when a recompile ran around the change
+  conservation_passed: boolean | null; // fill when a conservation check ran around the change
+}
+
+export interface GraphMeta {
+  version: number;          // monotonic count of ACCEPTED structural states
+  updated_at: string;
+}
+
 // ── Diagnostic / envelope (shared across tools) ──────────────────────────────
 export type DiagnosticSeverity = "error" | "warning";
 

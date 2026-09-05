@@ -3,7 +3,7 @@ import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 import { openStore, closeStore, deleteStore } from "../src/graph/store.js";
-import { createTrigger, createFlowTree, createBlock, getBlock, listBlocks, resetAll, createDataSource, createTriggerTrace, promoteBlock, listDataSources, getRequirementsCoverage, resetDrafts, updateBlock, updateTrigger, updateDataSource } from "../src/graph/draft.js";
+import { createTrigger, createFlowTree, createBlock, getBlock, listBlocks, resetAll, createDataSource, createTriggerTrace, promoteBlock, listDataSources, getRequirementsCoverage, resetDrafts, updateBlock, updateTrigger, updateDataSource, addPort, addDependency, getGraphVersion, listChangeLog, revertChange } from "../src/graph/draft.js";
 import { newContext, handleBeginInitialization, handleProposeBlock } from "../src/mcp/tools.js";
 import { compileBlockGraph } from "../src/graph/compiler.js";
 import { sourceRefToString } from "../src/graph/schema.js";
@@ -330,5 +330,64 @@ describe("acceptance-driven store/draft", () => {
     expect(updateDataSource(db, "ds1", { access_mode: "read" })).toBe(true);
     expect(db.prepare(`SELECT name FROM triggers WHERE id = 't1'`).get() as any).toMatchObject({ name: "new" });
     expect(db.prepare(`SELECT access_mode FROM data_sources WHERE id = 'ds1'`).get() as any).toMatchObject({ access_mode: "read" });
+  });
+
+  // ── V2.1: graph change log + monotonic version ──────────────────────────────
+  const mk = (id: string, opts?: Partial<FunctionalBlock>): FunctionalBlock => ({
+    id, name: id, purpose: id, parent_id: null,
+    function_spec: { inputs: [], outputs: { type: "x", description: "" }, preconditions: [], postconditions: [], invariants: [], error_handling: {} },
+    boundary: { in_scope: [], out_of_scope: [] }, ports: [], deps: [], data_operations: [], source: { kind: "ac", ac_id: "AC-001" }, status: "draft",
+    ...opts,
+  });
+
+  it("change log records create/update with before/after + reason, and version bumps only on promote", () => {
+    createBlock(db, mk("b1", { purpose: "old" }), { actor: "structure_agent", reason: "init" });
+    expect(getGraphVersion(db)).toBe(0); // draft edit does NOT bump version
+    updateBlock(db, "b1", { purpose: "new" }, { actor: "steward", reason: "request:cr-42" });
+    expect(getGraphVersion(db)).toBe(0); // still at 0 (not accepted yet)
+
+    const log = listChangeLog(db, { target_id: "b1" });
+    expect(log.length).toBe(2); // create_block + update_block
+    expect(log[0].kind).toBe("create_block");
+    expect(log[0].reason).toBe("init");
+    expect(log[1].kind).toBe("update_block");
+    expect(log[1].actor).toBe("steward");
+    expect(log[1].reason).toBe("request:cr-42");
+    expect((log[1].before as any).purpose).toBe("old");
+    expect((log[1].after as any).purpose).toBe("new");
+
+    promoteBlock(db, "b1");
+    expect(getGraphVersion(db)).toBe(1); // promote bumps version
+    const afterPromote = listChangeLog(db, { kind: "promote_block" });
+    expect(afterPromote).toHaveLength(1);
+    expect(afterPromote[0].graph_version).toBe(1);
+  });
+
+  it("revert_change restores the `before` of an update (rollback a bad edit)", () => {
+    createBlock(db, mk("b1", { purpose: "old" }));
+    updateBlock(db, "b1", { purpose: "bad" });
+    expect(getBlock(db, "b1")?.purpose).toBe("bad");
+    const upd = listChangeLog(db, { kind: "update_block" })[0];
+    expect(revertChange(db, upd.id)).toBe(true);
+    expect(getBlock(db, "b1")?.purpose).toBe("old");
+  });
+
+  it("revert_change on an added port removes the port (fine-grained delete)", () => {
+    createBlock(db, mk("b1"));
+    addPort(db, { id: "p_in", block_id: "b1", name: "in", direction: "in", contract: "", scope: "external" });
+    expect((getBlock(db, "b1")?.ports ?? []).length).toBe(1);
+    const add = listChangeLog(db, { kind: "add_port" })[0];
+    expect(revertChange(db, add.id)).toBe(true);
+    expect((getBlock(db, "b1")?.ports ?? []).length).toBe(0);
+  });
+
+  it("add_dependency is logged and an added dep is revertible", () => {
+    createBlock(db, mk("src"));
+    createBlock(db, mk("dst"));
+    addDependency(db, { id: "d1", source_block_id: "src", target_block_id: "dst", via_port: "out", protocol: "data", source: { kind: "ac", ac_id: "AC-001" } });
+    const log = listChangeLog(db, { kind: "add_dep" });
+    expect(log).toHaveLength(1);
+    expect(revertChange(db, log[0].id)).toBe(true);
+    expect((db.prepare(`SELECT COUNT(*) c FROM deps`).get() as any).c).toBe(0);
   });
 });

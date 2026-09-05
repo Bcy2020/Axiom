@@ -111,7 +111,37 @@ function initTables(db: DatabaseSync): void {
       FOREIGN KEY (trigger_id) REFERENCES triggers(id),
       FOREIGN KEY (target_block_id) REFERENCES blocks(id)
     );
+
+    -- V2.1: monotonic graph version (bumps on an ACCEPTED change).
+    CREATE TABLE IF NOT EXISTS graph_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
+    -- V2.1: evolution / mutation audit log. Deliberately NO foreign keys — it is a
+    -- durable log that must survive even when the object it describes is later
+    -- deleted; before/after are JSON snapshots.
+    CREATE TABLE IF NOT EXISTS change_log (
+      id TEXT PRIMARY KEY,
+      ts TEXT NOT NULL,
+      actor TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      before TEXT,
+      after TEXT,
+      reason TEXT,
+      graph_version INTEGER NOT NULL,
+      compile_passed INTEGER,
+      conservation_passed INTEGER
+    );
   `);
+
+  // Seed the graph version if missing.
+  const hasVersion = (db.prepare(`SELECT value FROM graph_meta WHERE key = 'version'`).get() as any);
+  if (!hasVersion) {
+    db.prepare(`INSERT INTO graph_meta (key, value) VALUES ('version', '0')`).run();
+    db.prepare(`INSERT INTO graph_meta (key, value) VALUES ('updated_at', ?)`).run(new Date().toISOString());
+  }
 
   // Migration: older DBs may lack the `data_operations` column on blocks.
   migrateColumns(db, "blocks", [{ name: "data_operations", ddl: "TEXT NOT NULL DEFAULT '[]'" }]);

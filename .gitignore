@@ -22,6 +22,11 @@ GEMINI.md
 node_modules/
 dist/
 .build/
+# Runtime decomposition store (created by the MCP server whenever it runs in a dir).
+# NOTE: the experiment decomposition DBs (experiments/*/.acceptance/) ARE committed —
+# a committed file is unaffected by .gitignore, so re-ignoring `.acceptance/` keeps
+# them tracked while ignoring freshly-created runtime stores.
+.acceptance/
 *.bak
 *.log
 __pycache__/

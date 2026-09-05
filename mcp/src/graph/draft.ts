@@ -3,9 +3,10 @@
  * Uses Node's built-in `node:sqlite` DatabaseSync with positional params.
  */
 import type { DatabaseSync } from "node:sqlite";
+import { sourceRefToString } from "./schema.js";
 import type {
   Trigger, TriggerFeedbackTree, FeedbackNode, FunctionalBlock, Port, Dependency, SourceRef,
-  DataSource, BlockDataOperation, TriggerTrace,
+  DataSource, BlockDataOperation, TriggerTrace, ChangeKind,
 } from "./schema.js";
 
 function json<T>(x: T): string {
@@ -28,10 +29,80 @@ function withTransaction(db: DatabaseSync, fn: () => void): void {
   catch (e) { try { db.exec("ROLLBACK"); } catch { /* already rolled back */ } throw e; }
 }
 
+// ── V2.1: graph version + change log ─────────────────────────────────────────
+export interface ChangeCtx { actor?: string; reason?: string; }
+
+export function getGraphVersion(db: DatabaseSync): number {
+  const r = db.prepare(`SELECT value FROM graph_meta WHERE key = 'version'`).get() as any;
+  return r ? parseInt(r.value, 10) || 0 : 0;
+}
+
+/** Bump the accepted-graph version and return the new value. Called on promote. */
+export function bumpGraphVersion(db: DatabaseSync): number {
+  const v = getGraphVersion(db) + 1;
+  db.prepare(`UPDATE graph_meta SET value = ? WHERE key = 'version'`).run(String(v));
+  db.prepare(`UPDATE graph_meta SET value = ? WHERE key = 'updated_at'`).run(new Date().toISOString());
+  return v;
+}
+
+/** Append a change-log row. graph_version defaults to the current accepted version. */
+export function logChange(
+  db: DatabaseSync,
+  e: { kind: ChangeKind; target_id: string; before?: unknown; after?: unknown; ctx?: ChangeCtx;
+        graph_version?: number; compile_passed?: boolean | null; conservation_passed?: boolean | null },
+): void {
+  const id = `chg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const version = e.graph_version ?? getGraphVersion(db);
+  const reason = e.ctx?.reason ?? "";
+  db.prepare(`INSERT INTO change_log (id, ts, actor, kind, target_id, before, after, reason, graph_version, compile_passed, conservation_passed)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(
+      id,
+      new Date().toISOString(),
+      e.ctx?.actor ?? "structure_agent",
+      e.kind,
+      e.target_id,
+      e.before == null ? null : JSON.stringify(e.before),
+      e.after == null ? null : JSON.stringify(e.after),
+      reason,
+      version,
+      e.compile_passed == null ? null : (e.compile_passed ? 1 : 0),
+      e.conservation_passed == null ? null : (e.conservation_passed ? 1 : 0),
+    );
+}
+
+export interface ChangeLogRow {
+  id: string; ts: string; actor: string; kind: string; target_id: string;
+  before: unknown; after: unknown; reason: string; graph_version: number;
+  compile_passed: boolean | null; conservation_passed: boolean | null;
+}
+
+export function listChangeLog(db: DatabaseSync, filter?: { actor?: string; kind?: string; target_id?: string }): ChangeLogRow[] {
+  let sql = `SELECT * FROM change_log`;
+  const conds: string[] = []; const params: string[] = [];
+  if (filter?.actor) { conds.push(`actor = ?`); params.push(filter.actor); }
+  if (filter?.kind) { conds.push(`kind = ?`); params.push(filter.kind); }
+  if (filter?.target_id) { conds.push(`target_id = ?`); params.push(filter.target_id); }
+  if (conds.length) sql += ` WHERE ` + conds.join(` AND `);
+  sql += ` ORDER BY ts ASC, rowid ASC`;
+  return (db.prepare(sql).all(...params) as any[]).map((r) => ({
+    id: r.id, ts: r.ts, actor: r.actor, kind: r.kind, target_id: r.target_id,
+    before: r.before == null ? null : safeParse(r.before), after: r.after == null ? null : safeParse(r.after),
+    reason: r.reason, graph_version: r.graph_version,
+    compile_passed: r.compile_passed == null ? null : !!r.compile_passed,
+    conservation_passed: r.conservation_passed == null ? null : !!r.conservation_passed,
+  }));
+}
+
+function safeParse(s: string): unknown {
+  try { return JSON.parse(s); } catch { return s; }
+}
+
 // ── Triggers ────────────────────────────────────────────────────────────────
-export function createTrigger(db: DatabaseSync, t: Trigger): void {
+export function createTrigger(db: DatabaseSync, t: Trigger, ctx?: ChangeCtx): void {
   db.prepare(`INSERT INTO triggers (id, name, command, precondition, source) VALUES (?, ?, ?, ?, ?)`)
     .run(t.id, t.name, t.command ?? null, t.precondition ?? null, json(t.source));
+  logChange(db, { kind: "create_trigger", target_id: t.id, before: null, after: t, ctx });
 }
 export function getTrigger(db: DatabaseSync, id: string): Trigger | null {
   const r = db.prepare(`SELECT * FROM triggers WHERE id = ?`).get(id) as any;
@@ -59,7 +130,20 @@ export function listFlowTrees(db: DatabaseSync): TriggerFeedbackTree[] {
 }
 
 // ── Blocks ──────────────────────────────────────────────────────────────────
-export function createBlock(db: DatabaseSync, b: FunctionalBlock): void {
+// Lower-level port/dep inserts WITHOUT change-logging (used inside createBlock /
+// updateBlock transactions so a single block-level change is logged once, not per
+// nested row). Public addPort/addDependency (used by record_port/connect_dependency)
+// wrap these and log a change.
+function _addPortRaw(db: DatabaseSync, p: Port): void {
+  db.prepare(`INSERT INTO ports (id, block_id, name, direction, contract, scope) VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(p.id, p.block_id, p.name, p.direction, p.contract, p.scope ?? "external");
+}
+function _addDepRaw(db: DatabaseSync, d: Dependency): void {
+  db.prepare(`INSERT INTO deps (id, source_block_id, target_block_id, via_port, protocol, source) VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(d.id, d.source_block_id, d.target_block_id, d.via_port ?? null, d.protocol ?? "unknown", json(d.source ?? { kind: "ac", ac_id: "" }));
+}
+
+export function createBlock(db: DatabaseSync, b: FunctionalBlock, ctx?: ChangeCtx): void {
   // node:sqlite binds only null (not undefined) for nullable/optional columns.
   // Atomic: block row + ports + deps in ONE transaction; if any insert fails
   // (e.g. a malformed dep), roll back everything so no partial block survives.
@@ -77,17 +161,19 @@ export function createBlock(db: DatabaseSync, b: FunctionalBlock): void {
         json(b.source ?? { kind: "ac", ac_id: "" }),
         b.status ?? "draft",
       );
-    for (const p of (b.ports ?? [])) addPort(db, p);
-    for (const d of (b.deps ?? [])) addDependency(db, d);
+    for (const p of (b.ports ?? [])) _addPortRaw(db, p);
+    for (const d of (b.deps ?? [])) _addDepRaw(db, d);
+    logChange(db, { kind: "create_block", target_id: b.id, before: null, after: b, ctx });
   });
 }
-export function addPort(db: DatabaseSync, p: Port): void {
-  db.prepare(`INSERT INTO ports (id, block_id, name, direction, contract, scope) VALUES (?, ?, ?, ?, ?, ?)`)
-    .run(p.id, p.block_id, p.name, p.direction, p.contract, p.scope ?? "external");
+
+export function addPort(db: DatabaseSync, p: Port, ctx?: ChangeCtx): void {
+  _addPortRaw(db, p);
+  logChange(db, { kind: "add_port", target_id: p.id, before: null, after: p, ctx });
 }
-export function addDependency(db: DatabaseSync, d: Dependency): void {
-  db.prepare(`INSERT INTO deps (id, source_block_id, target_block_id, via_port, protocol, source) VALUES (?, ?, ?, ?, ?, ?)`)
-    .run(d.id, d.source_block_id, d.target_block_id, d.via_port ?? null, d.protocol ?? "unknown", json(d.source ?? { kind: "ac", ac_id: "" }));
+export function addDependency(db: DatabaseSync, d: Dependency, ctx?: ChangeCtx): void {
+  _addDepRaw(db, d);
+  logChange(db, { kind: "add_dep", target_id: d.id, before: null, after: d, ctx });
 }
 export function getBlock(db: DatabaseSync, id: string): FunctionalBlock | null {
   const r = db.prepare(`SELECT * FROM blocks WHERE id = ?`).get(id) as any;
@@ -115,7 +201,7 @@ export function setBlockStatus(db: DatabaseSync, id: string, status: string): vo
 // ── Update (in-place, for reviewer-feedback revisions) ───────────────────────
 // Only override patch fields that are actually defined (undefined = leave as-is),
 // so a partial update doesn't clobber existing values.
-export function updateTrigger(db: DatabaseSync, id: string, patch: Partial<Trigger>): boolean {
+export function updateTrigger(db: DatabaseSync, id: string, patch: Partial<Trigger>, ctx?: ChangeCtx): boolean {
   const t = getTrigger(db, id); if (!t) return false;
   const m: any = { ...t };
   if (patch.name !== undefined) m.name = patch.name;
@@ -124,10 +210,11 @@ export function updateTrigger(db: DatabaseSync, id: string, patch: Partial<Trigg
   if (patch.source !== undefined) m.source = patch.source;
   db.prepare(`UPDATE triggers SET name=?, command=?, precondition=?, source=? WHERE id=?`)
     .run(m.name, m.command ?? null, m.precondition ?? null, json(m.source), id);
+  logChange(db, { kind: "update_trigger", target_id: id, before: t, after: m, ctx });
   return true;
 }
 
-export function updateDataSource(db: DatabaseSync, id: string, patch: Partial<DataSource>): boolean {
+export function updateDataSource(db: DatabaseSync, id: string, patch: Partial<DataSource>, ctx?: ChangeCtx): boolean {
   const d = getDataSource(db, id); if (!d) return false;
   const m: any = { ...d };
   if (patch.name !== undefined) m.name = patch.name;
@@ -137,6 +224,7 @@ export function updateDataSource(db: DatabaseSync, id: string, patch: Partial<Da
   if (patch.operations !== undefined) m.operations = patch.operations;
   db.prepare(`UPDATE data_sources SET name=?, category=?, access_mode=?, entities=?, operations=? WHERE id=?`)
     .run(m.name, m.category, m.access_mode, json(m.entities ?? []), json(m.operations ?? []), id);
+  logChange(db, { kind: "update_data_source", target_id: id, before: d, after: m, ctx });
   return true;
 }
 
@@ -144,7 +232,7 @@ export function updateDataSource(db: DatabaseSync, id: string, patch: Partial<Da
 // must be recompiled + re-promoted (preserves the draft→compile→promote state machine).
 // If patch provides ports / deps, that block's own ports / outgoing deps are replaced
 // atomically; otherwise left intact. Returns false if the block doesn't exist.
-export function updateBlock(db: DatabaseSync, id: string, patch: Partial<FunctionalBlock>): boolean {
+export function updateBlock(db: DatabaseSync, id: string, patch: Partial<FunctionalBlock>, ctx?: ChangeCtx): boolean {
   const b = getBlock(db, id); if (!b) return false;
   const m: any = { ...b };
   if (patch.name !== undefined) m.name = patch.name;
@@ -156,26 +244,29 @@ export function updateBlock(db: DatabaseSync, id: string, patch: Partial<Functio
   if (patch.source !== undefined) m.source = patch.source;
   if (patch.ports !== undefined) m.ports = patch.ports;
   if (patch.deps !== undefined) m.deps = patch.deps;
+  const kind: ChangeKind = (patch.parent_id !== undefined && patch.parent_id !== b.parent_id) ? "reparent_block" : "update_block";
   withTransaction(db, () => {
     db.prepare(`UPDATE blocks SET name=?, purpose=?, parent_id=?, function_spec=?, boundary=?, data_operations=?, source=?, status=? WHERE id=?`)
       .run(m.name, m.purpose ?? "", m.parent_id ?? null, json(m.function_spec ?? DEFAULT_FUNCTION_SPEC), json(m.boundary ?? { in_scope: [], out_of_scope: [] }), json(m.data_operations ?? []), json(m.source ?? { kind: "ac", ac_id: "" }), "draft", id);
     if (patch.ports !== undefined) {
       db.prepare(`DELETE FROM ports WHERE block_id = ?`).run(id);
-      for (const p of (m.ports ?? [])) addPort(db, { ...p, block_id: id });
+      for (const p of (m.ports ?? [])) _addPortRaw(db, { ...p, block_id: id });
     }
     if (patch.deps !== undefined) {
       db.prepare(`DELETE FROM deps WHERE source_block_id = ?`).run(id);
-      for (const d of (m.deps ?? [])) addDependency(db, { ...d });
+      for (const d of (m.deps ?? [])) _addDepRaw(db, { ...d });
     }
+    logChange(db, { kind, target_id: id, before: b, after: m, ctx });
   });
   return true;
 }
 
 // ── Data sources (V2: global state sources) ──────────────────────────────────
-export function createDataSource(db: DatabaseSync, d: DataSource): void {
+export function createDataSource(db: DatabaseSync, d: DataSource, ctx?: ChangeCtx): void {
   db.prepare(`INSERT INTO data_sources (id, name, category, access_mode, entities, operations)
               VALUES (?, ?, ?, ?, ?, ?)`)
     .run(d.id, d.name, d.category, d.access_mode, json(d.entities ?? []), json(d.operations ?? []));
+  logChange(db, { kind: "create_data_source", target_id: d.id, before: null, after: d, ctx });
 }
 export function getDataSource(db: DatabaseSync, id: string): DataSource | null {
   const r = db.prepare(`SELECT * FROM data_sources WHERE id = ?`).get(id) as any;
@@ -274,10 +365,12 @@ export function getRequirementsCoverage(db: DatabaseSync): RequirementsCoverage 
 }
 
 // ── State machine: promote + snapshot ────────────────────────────────────────
-export function promoteBlock(db: DatabaseSync, id: string): boolean {
+export function promoteBlock(db: DatabaseSync, id: string, ctx?: ChangeCtx): boolean {
   const b = getBlock(db, id);
   if (!b) return false;
   setBlockStatus(db, id, "accepted");
+  const v = bumpGraphVersion(db);
+  logChange(db, { kind: "promote_block", target_id: id, before: b.status, after: "accepted", graph_version: v, ctx });
   return true;
 }
 export function createSnapshot(db: DatabaseSync, gitSha: string, version: string): void {
@@ -298,6 +391,10 @@ export function resetAll(db: DatabaseSync): void {
     DELETE FROM triggers;
     DELETE FROM data_sources;
   `);
+  // Full wipe also clears the evolution log and resets the accepted-graph version.
+  db.exec(`DELETE FROM change_log`);
+  db.prepare(`UPDATE graph_meta SET value = '0' WHERE key = 'version'`).run();
+  db.prepare(`UPDATE graph_meta SET value = ? WHERE key = 'updated_at'`).run(new Date().toISOString());
 }
 
 /** Light reset: delete only draft-status blocks and their dependent records,
@@ -316,4 +413,60 @@ export function resetDrafts(db: DatabaseSync): void {
   // children survive as top-level roots.
   db.prepare(`UPDATE blocks SET parent_id = NULL WHERE parent_id IN (${ph})`).run(...draftIds);
   db.prepare(`DELETE FROM blocks WHERE id IN (${ph})`).run(...draftIds);
+}
+
+// ── V2.1: deletes + fine-grained revert (from the change log) ─────────────────
+export function deletePort(db: DatabaseSync, id: string, ctx?: ChangeCtx): void {
+  const before = (db.prepare(`SELECT * FROM ports WHERE id = ?`).get(id) as any) ?? null;
+  db.prepare(`DELETE FROM ports WHERE id = ?`).run(id);
+  logChange(db, { kind: "restore", target_id: id, before, after: null, ctx: ctx ?? { actor: "revert", reason: "delete_port" } });
+}
+export function deleteDep(db: DatabaseSync, id: string, ctx?: ChangeCtx): void {
+  const before = (db.prepare(`SELECT * FROM deps WHERE id = ?`).get(id) as any) ?? null;
+  db.prepare(`DELETE FROM deps WHERE id = ?`).run(id);
+  logChange(db, { kind: "restore", target_id: id, before, after: null, ctx: ctx ?? { actor: "revert", reason: "delete_dep" } });
+}
+/** Delete a block (FK-safe: clean referencing rows, detach accepted children). */
+export function deleteBlock(db: DatabaseSync, id: string, ctx?: ChangeCtx): boolean {
+  if (!getBlock(db, id)) return false;
+  const before = getBlock(db, id);
+  withTransaction(db, () => {
+    db.prepare(`DELETE FROM trigger_traces WHERE target_block_id = ?`).run(id);
+    db.prepare(`DELETE FROM deps WHERE source_block_id = ? OR target_block_id = ?`).run(id, id);
+    db.prepare(`DELETE FROM ports WHERE block_id = ?`).run(id);
+    db.prepare(`UPDATE blocks SET parent_id = NULL WHERE parent_id = ?`).run(id);
+    db.prepare(`DELETE FROM blocks WHERE id = ?`).run(id);
+    logChange(db, { kind: "delete_block", target_id: id, before, after: null, ctx });
+  });
+  return true;
+}
+
+/** Fine-grained revert: restore the `before` of a single change (rollback a bad edit). */
+export function revertChange(db: DatabaseSync, changeId: string, ctx?: ChangeCtx): boolean {
+  const row = db.prepare(`SELECT * FROM change_log WHERE id = ?`).get(changeId) as any;
+  if (!row) return false;
+  const kind = row.kind as ChangeKind;
+  const target = row.target_id;
+  const before = row.before == null ? null : safeParse(row.before);
+  const after = row.after == null ? null : safeParse(row.after);
+  const rctx: ChangeCtx = ctx ?? { actor: "revert", reason: "revert:" + changeId };
+  switch (kind) {
+    case "create_block": deleteBlock(db, target, rctx); break;
+    case "update_block":
+    case "reparent_block": {
+      const b = before as FunctionalBlock;
+      if (b && getBlock(db, target)) {
+        updateBlock(db, target, { name: b.name, purpose: b.purpose, parent_id: b.parent_id, function_spec: b.function_spec, boundary: b.boundary, data_operations: b.data_operations, source: b.source, ports: b.ports, deps: b.deps }, rctx);
+      }
+      break;
+    }
+    case "add_port": deletePort(db, target, rctx); break;
+    case "add_dep": deleteDep(db, target, rctx); break;
+    case "promote_block": setBlockStatus(db, target, "draft"); break;
+    case "update_trigger": { const t = before as any; if (t) updateTrigger(db, target, t, rctx); break; }
+    case "update_data_source": { const d = before as any; if (d) updateDataSource(db, target, d, rctx); break; }
+    default: break; // create_trigger / create_data_source / delete_block: no cheap inverse
+  }
+  logChange(db, { kind: "restore", target_id: target, before: after, after: before, ctx: rctx });
+  return true;
 }
